@@ -33,21 +33,13 @@ import pascal.taie.analysis.graph.cfg.CFGBuilder;
 import pascal.taie.analysis.graph.cfg.Edge;
 import pascal.taie.config.AnalysisConfig;
 import pascal.taie.ir.IR;
-import pascal.taie.ir.exp.ArithmeticExp;
-import pascal.taie.ir.exp.ArrayAccess;
-import pascal.taie.ir.exp.CastExp;
-import pascal.taie.ir.exp.FieldAccess;
-import pascal.taie.ir.exp.NewExp;
-import pascal.taie.ir.exp.RValue;
-import pascal.taie.ir.exp.Var;
+import pascal.taie.ir.exp.*;
 import pascal.taie.ir.stmt.AssignStmt;
 import pascal.taie.ir.stmt.If;
 import pascal.taie.ir.stmt.Stmt;
 import pascal.taie.ir.stmt.SwitchStmt;
 
-import java.util.Comparator;
-import java.util.Set;
-import java.util.TreeSet;
+import java.util.*;
 
 public class DeadCodeDetection extends MethodAnalysis {
 
@@ -71,6 +63,63 @@ public class DeadCodeDetection extends MethodAnalysis {
         Set<Stmt> deadCode = new TreeSet<>(Comparator.comparing(Stmt::getIndex));
         // TODO - finish me
         // Your task is to recognize dead code in ir and add it to deadCode
+        for (Stmt stmt : cfg) {
+            deadCode.add(stmt);
+        }
+        Queue<Stmt> workList = new LinkedList<>();
+        workList.add(cfg.getEntry());
+        while (!workList.isEmpty()) {
+            Stmt curStmt = workList.poll();
+            if (!deadCode.contains(curStmt)) {
+                continue;
+            }
+            boolean isDead = false;
+            if (curStmt instanceof AssignStmt assignStmt && curStmt.getDef().isPresent()) {
+                isDead = curStmt.getDef().isPresent()
+                        && curStmt.getDef().get() instanceof Var var
+                        && !liveVars.getOutFact(curStmt).contains(var)
+                        && hasNoSideEffect(assignStmt.getRValue());
+            }
+            if (!isDead) {
+                deadCode.remove(curStmt);
+            }
+            if (curStmt instanceof If ifStmt) {
+                ConditionExp cond = ifStmt.getCondition();
+                Value condValue = ConstantPropagation.evaluate((Exp) cond, constants.getInFact(curStmt));
+                if (condValue.isConstant()) {
+                    for (Edge<Stmt> edge : cfg.getOutEdgesOf(curStmt)) {
+                        if ((condValue.getConstant() == 1 && edge.getKind() == Edge.Kind.IF_TRUE)
+                                || (condValue.getConstant() == 0 && edge.getKind() == Edge.Kind.IF_FALSE)) {
+                            workList.add(edge.getTarget());
+                        }
+                    }
+                } else {
+                    workList.addAll(cfg.getSuccsOf(curStmt));
+
+                }
+            } else if (curStmt instanceof SwitchStmt switchStmt) {
+                Value varValue = ConstantPropagation.evaluate(switchStmt.getVar(), constants.getInFact(curStmt));
+                if (varValue.isConstant()) {
+                    int intConst = varValue.getConstant();
+                    boolean flag = false;
+                    for (Edge<Stmt> edge : cfg.getOutEdgesOf(curStmt)) {
+                        if (edge.isSwitchCase() && edge.getCaseValue() == intConst) {
+                            workList.add(edge.getTarget());
+                            flag = true;
+                            break;
+                        }
+                    }
+                    if (!flag) {
+                        workList.add(switchStmt.getDefaultTarget());
+                    }
+                } else {
+                    workList.addAll(cfg.getSuccsOf(curStmt));
+                }
+            } else {
+                workList.addAll(cfg.getSuccsOf(curStmt));
+            }
+        }
+        deadCode.remove(cfg.getExit());
         return deadCode;
     }
 
